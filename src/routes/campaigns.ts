@@ -151,7 +151,11 @@ export async function campaignRoutes(app: FastifyInstance) {
 
     const { metadataDescription, ...campaign } = row;
     if (campaign.metadata) campaign.metadata.description = metadataDescription;
-    return { ...campaign, milestones };
+    const advances = await app.db.query(
+      `SELECT verifier, milestone_index AS "milestoneIndex", amount, tx_hash AS "txHash", created_at AS "createdAt" FROM emergency_advances WHERE campaign_id=$1 ORDER BY created_at DESC`,
+      [id.toString()],
+    );
+    return { ...campaign, milestones, emergencyAdvances: advances.rows };
   });
 
   app.get('/campaigns/:id/donations', async (req) => {
@@ -161,6 +165,16 @@ export async function campaignRoutes(app: FastifyInstance) {
       `SELECT donor, amount, tx_hash AS "txHash", created_at AS "createdAt"
        FROM donations WHERE campaign_id = $1
        ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [id.toString(), q.limit, q.offset],
+    );
+    return { items: rows };
+  });
+
+  app.get('/campaigns/:id/pledges', async (req) => {
+    const { id } = z.object({ id: z.coerce.bigint() }).parse(req.params);
+    const q = pagination.parse(req.query);
+    const { rows } = await app.db.query(
+      `SELECT pledge_id AS "pledgeId", donor, pledged_amount AS "pledgedAmount", pulled_amount AS "pulledAmount", status, skipped_reason AS "skippedReason", updated_at AS "updatedAt" FROM pledges WHERE campaign_id=$1 ORDER BY updated_at DESC LIMIT $2 OFFSET $3`,
       [id.toString(), q.limit, q.offset],
     );
     return { items: rows };

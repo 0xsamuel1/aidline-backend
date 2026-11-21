@@ -29,6 +29,7 @@ export interface ChainCampaign {
 
 export interface ContractReader {
   getCampaign(id: bigint): Promise<ChainCampaign>;
+  getCampaignCount?: () => Promise<bigint>;
 }
 
 export class AidlineContract implements ContractReader {
@@ -45,6 +46,11 @@ export class AidlineContract implements ContractReader {
   async getCampaign(id: bigint): Promise<ChainCampaign> {
     const raw = await this.read('get_campaign', nativeToScVal(id, { type: 'u64' }));
     return parseCampaign(raw);
+  }
+
+  async getCampaignCount(): Promise<bigint> {
+    const raw = await this.read('campaign_count');
+    return BigInt(raw as bigint);
   }
 
   private async read(method: string, ...args: xdr.ScVal[]): Promise<unknown> {
