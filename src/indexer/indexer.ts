@@ -67,6 +67,7 @@ export interface IndexerOptions {
  */
 export class Indexer {
   private timer: NodeJS.Timeout | null = null;
+  private inFlight: Promise<void> | null = null;
   private stopped = true;
   private consecutiveFailures = 0;
 
@@ -78,23 +79,28 @@ export class Indexer {
     void this.loop();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    await this.inFlight;
   }
 
   private async loop(): Promise<void> {
     if (this.stopped) return;
     let delay = this.opts.pollMs;
     try {
-      const count = await this.syncOnce();
-      this.consecutiveFailures = 0;
+      const sync = this.syncOnce();
+      this.inFlight = sync.then(
+        () => undefined,
+        () => undefined,
+      );
+      const count = await sync;
       // Keep draining without waiting while there is a backlog.
       if (count === PAGE_SIZE) delay = 0;
     } catch (err) {
-      this.consecutiveFailures += 1;
-      delay = Math.min(MAX_FAILURE_BACKOFF_MS, this.opts.pollMs * 2 ** Math.min(this.consecutiveFailures, 30));
-      this.opts.log.error({ err, consecutiveFailures: this.consecutiveFailures, retryDelayMs: delay }, 'indexer sync failed');
+      this.opts.log.error({ err }, 'indexer sync failed');
+    } finally {
+      this.inFlight = null;
     }
     if (!this.stopped) this.timer = setTimeout(() => void this.loop(), delay);
   }
@@ -167,6 +173,32 @@ export class Indexer {
     this.opts.cache?.clear();
     if (events.length) this.opts.log.info({ count: events.length }, 'indexed events');
     return res.events.length;
+  }
+
+  /** Rebuilds current campaign state after a database loss, then resumes from RPC history. */
+  async reindex(): Promise<number> {
+    if (!this.opts.contract.getCampaignCount)
+      throw new Error('contract reader does not support campaign_count');
+    const count = await this.opts.contract.getCampaignCount();
+    const client = await this.opts.db.connect();
+    try {
+      await client.query('BEGIN');
+      for (let id = 1n; id <= count; id++) {
+        const campaign = await this.opts.contract.getCampaign(id);
+        await upsertCampaign(client, campaign, { ledger: 0, closedAt: new Date() });
+      }
+      await client.query(
+        `INSERT INTO indexer_state (id,cursor,last_ledger,updated_at) VALUES (1,NULL,NULL,now()) ON CONFLICT (id) DO UPDATE SET cursor=NULL, updated_at=now()`,
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    this.opts.cache?.clear();
+    return Number(count);
   }
 
   /**
@@ -266,8 +298,23 @@ export class Indexer {
   private async fetchCampaigns(events: AidlineEvent[]) {
     const ids = new Set<bigint>();
     for (const ev of events) if ('campaignId' in ev) ids.add(ev.campaignId);
-    const entries = await Promise.all(
-      [...ids].map(async (id) => [id, await this.opts.contract.getCampaign(id)] as const),
+    const entries = (
+      await Promise.all(
+        [...ids].map(async (id) => {
+          const campaign = await this.opts.contract.getCampaign(id);
+          if (!['active', 'completed', 'cancelled'].includes(campaign.status)) {
+            this.opts.log.warn(
+              { campaignId: id.toString(), status: campaign.status },
+              'skipping campaign with unknown contract status',
+            );
+            return null;
+          }
+          return [id, campaign] as const;
+        }),
+      )
+    ).filter(
+      (entry): entry is readonly [bigint, Awaited<ReturnType<ContractReader['getCampaign']>>] =>
+        entry !== null,
     );
     return new Map(entries);
   }
