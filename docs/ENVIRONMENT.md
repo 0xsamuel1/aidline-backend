@@ -78,3 +78,20 @@ The Stellar CLI reads `STELLAR_*` variables from `.env`. Sharing those names wou
 ## Secrets
 
 The backend holds no signing keys and never moves funds. `DATABASE_URL` is the only secret. Do not commit `.env`. The demo seeding script reads `SEED_ADMIN_SECRET` from the shell for a single run and never stores it.
+
+### Indexer starting ledger and recovery
+
+On a fresh database with no stored cursor, the indexer starts at
+`INDEXER_START_LEDGER` if configured, otherwise 1,000 ledgers before the RPC
+network tip. If that ledger is older than the RPC's retained history, the RPC
+oldest available ledger is used instead. The indexer logs the selected ledger
+and whether it was configured, defaulted, or clamped to the RPC oldest ledger.
+Events before the chosen starting ledger are **not indexed**. Set
+`INDEXER_START_LEDGER` explicitly when historic coverage matters and use an
+RPC provider with sufficient history retention.
+
+Indexer polling backs off exponentially after consecutive failures (up to two
+minutes), returning to normal polling immediately after a successful sync.
+The `/health` response includes `lastSyncedAt`, `secondsSinceSync`, and
+`stale` (true after 60 seconds without a successful sync); Prometheus exposes
+`aidline_indexer_seconds_since_sync` (-1 before the first successful sync).
