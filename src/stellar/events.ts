@@ -21,6 +21,9 @@ export type AidlineEvent = EventBase &
     | { type: 'campaign_cancelled'; campaignId: bigint }
     | { type: 'refunded'; campaignId: bigint; donor: string; amount: bigint }
     | { type: 'verifier_updated'; verifier: string; active: boolean }
+    | { type: 'sponsor_pool_deposited'; campaignId: bigint; sponsor: string; amount: bigint; ratioBps: number; cap: bigint }
+    | { type: 'sponsor_pool_matched'; campaignId: bigint; sponsor: string; donor: string; donationAmount: bigint; matchedAmount: bigint }
+    | { type: 'sponsor_pool_returned'; campaignId: bigint; sponsor: string; amount: bigint }
   );
 
 /**
@@ -74,6 +77,16 @@ export function decodeEvent(ev: rpc.Api.EventResponse): AidlineEvent | null {
         verifier: String(topics[1]),
         active: Boolean(data.active),
       };
+    case 'sp_depos': {
+      const values = scValToNative(ev.value) as unknown[];
+      return { ...base, type: 'sponsor_pool_deposited', campaignId: BigInt(topics[1]), sponsor: String(topics[2]), amount: BigInt(values[0]), ratioBps: Number(values[1]), cap: BigInt(values[2]) };
+    }
+    case 'sp_match': {
+      const values = scValToNative(ev.value) as unknown[];
+      return { ...base, type: 'sponsor_pool_matched', campaignId: BigInt(topics[1]), sponsor: String(topics[2]), donor: String(values[0]), donationAmount: BigInt(values[1]), matchedAmount: BigInt(values[2]) };
+    }
+    case 'sp_ret':
+      return { ...base, type: 'sponsor_pool_returned', campaignId: BigInt(topics[1]), sponsor: String(topics[2]), amount: BigInt(scValToNative(ev.value)) };
     default:
       return null;
   }
