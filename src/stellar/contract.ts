@@ -30,6 +30,7 @@ export interface ChainCampaign {
 
 export interface ContractReader {
   getCampaign(id: bigint): Promise<ChainCampaign>;
+  getCampaignCount?: () => Promise<bigint>;
 }
 
 /** The write side of the contract, used by the TTL keeper. */

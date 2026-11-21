@@ -18,7 +18,7 @@ const application = z.object({
 export async function verifierRoutes(app: FastifyInstance) {
   app.get('/verifiers', async () => {
     const { rows } = await app.db.query(
-      `SELECT address, org_name AS "orgName", website, country, description
+      `SELECT address, org_name AS "orgName", website, country, description, bond_amount AS "bondAmount", ever_slashed AS "everSlashed", deregistered_at AS "deregisteredAt"
        FROM verifiers WHERE active ORDER BY org_name NULLS LAST, address`,
     );
     return { items: rows };
@@ -62,7 +62,7 @@ export async function verifierRoutes(app: FastifyInstance) {
     const { address } = z.object({ address: stellarAddress }).parse(req.params);
     const { rows } = await app.db.query(
       `SELECT address, active, org_name AS "orgName", website, country, description,
-              applied_at AS "appliedAt"
+              applied_at AS "appliedAt", bond_amount AS "bondAmount", ever_slashed AS "everSlashed", deregistered_at AS "deregisteredAt"
        FROM verifiers WHERE address = $1`,
       [address],
     );

@@ -172,6 +172,32 @@ export class Indexer {
     return res.events.length;
   }
 
+  /** Rebuilds current campaign state after a database loss, then resumes from RPC history. */
+  async reindex(): Promise<number> {
+    if (!this.opts.contract.getCampaignCount)
+      throw new Error('contract reader does not support campaign_count');
+    const count = await this.opts.contract.getCampaignCount();
+    const client = await this.opts.db.connect();
+    try {
+      await client.query('BEGIN');
+      for (let id = 1n; id <= count; id++) {
+        const campaign = await this.opts.contract.getCampaign(id);
+        await upsertCampaign(client, campaign, { ledger: 0, closedAt: new Date() });
+      }
+      await client.query(
+        `INSERT INTO indexer_state (id,cursor,last_ledger,updated_at) VALUES (1,NULL,NULL,now()) ON CONFLICT (id) DO UPDATE SET cursor=NULL, updated_at=now()`,
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    this.opts.cache?.clear();
+    return Number(count);
+  }
+
   /**
    * Called when `getEvents` rejects with a cursor-retention error.
    *
