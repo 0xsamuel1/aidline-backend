@@ -7,6 +7,7 @@ import { decodeEvent, type AidlineEvent } from '../stellar/events.js';
 import { recordEvent, upsertCampaign } from './store.js';
 
 const PAGE_SIZE = 100;
+const MAX_FAILURE_BACKOFF_MS = 120_000;
 
 /**
  * Phrases that appear in Soroban RPC error messages when the stored cursor
@@ -67,11 +68,13 @@ export interface IndexerOptions {
 export class Indexer {
   private timer: NodeJS.Timeout | null = null;
   private stopped = true;
+  private consecutiveFailures = 0;
 
   constructor(private readonly opts: IndexerOptions) {}
 
   start(): void {
     this.stopped = false;
+    this.consecutiveFailures = 0;
     void this.loop();
   }
 
@@ -85,10 +88,13 @@ export class Indexer {
     let delay = this.opts.pollMs;
     try {
       const count = await this.syncOnce();
+      this.consecutiveFailures = 0;
       // Keep draining without waiting while there is a backlog.
       if (count === PAGE_SIZE) delay = 0;
     } catch (err) {
-      this.opts.log.error({ err }, 'indexer sync failed');
+      this.consecutiveFailures += 1;
+      delay = Math.min(MAX_FAILURE_BACKOFF_MS, this.opts.pollMs * 2 ** Math.min(this.consecutiveFailures, 30));
+      this.opts.log.error({ err, consecutiveFailures: this.consecutiveFailures, retryDelayMs: delay }, 'indexer sync failed');
     }
     if (!this.stopped) this.timer = setTimeout(() => void this.loop(), delay);
   }
@@ -104,13 +110,13 @@ export class Indexer {
 
     let res: rpc.Api.GetEventsResponse;
     try {
-      res = cursor
-        ? await source.getEvents({ cursor, filters, limit: PAGE_SIZE })
-        : await source.getEvents({
-            startLedger: await this.startLedger(),
-            filters,
-            limit: PAGE_SIZE,
-          });
+      if (!cursor) {
+        const start = await this.startLedger();
+        this.opts.log.info({ startLedger: start.ledger, source: start.source }, 'indexer starting from ledger on fresh database');
+        res = await source.getEvents({ startLedger: start.ledger, filters, limit: PAGE_SIZE });
+      } else {
+        res = await source.getEvents({ cursor, filters, limit: PAGE_SIZE });
+      }
     } catch (err) {
       // A stored cursor can fall out of the RPC's retention window if the
       // indexer was offline for too long. Missed events cannot be replayed,
@@ -266,10 +272,10 @@ export class Indexer {
     return new Map(entries);
   }
 
-  private async startLedger(): Promise<number> {
+  private async startLedger(): Promise<{ ledger: number; source: 'configured' | 'default' | 'rpc_oldest' }> {
     const { oldestLedger, latestLedger } = await this.opts.source.getHealth();
     const wanted = this.opts.startLedger ?? latestLedger - 1000;
     // RPC only keeps recent history. Starting before that is an error.
-    return Math.max(wanted, oldestLedger);
+    return { ledger: Math.max(wanted, oldestLedger), source: wanted < oldestLedger ? 'rpc_oldest' : this.opts.startLedger !== undefined ? 'configured' : 'default' };
   }
 }
